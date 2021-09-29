@@ -1,0 +1,14 @@
+#!/bin/sh
+
+#get all alternatives for $1 package
+kiss a |grep $1 > /tmp/alts
+#create list that can be used by kiss a
+while read alt; do
+echo "kiss a "$alt"" >> /tmp/alts2
+done < /tmp/alts
+#apply all the alternative
+sh /tmp/alts2
+#cleanup
+rm /tmp/alts
+rm /tmp/alts2
+

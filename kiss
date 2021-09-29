@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/dash
 # shellcheck source=/dev/null
 #
 # Simple package manager written in POSIX shell for https://kisslinux.org
@@ -437,10 +437,19 @@ pkg_source_url() {
          wget|wget2) set -- -O   "$@" ;;
     esac
 
+    #add suport for binary sources on mega.nz
+    if echo "$3" | grep -q "mega.nz"
+    megalink=$(cat "$repo_dir/megalink")
+    then megadl "$megalink" || {
+        rm -f "$2"
+        die "$repo_name" "Failed to download $3"
+    }
+    else
     "$cmd_get" "$@" || {
         rm -f "$2"
         die "$repo_name" "Failed to download $3"
     }
+    fi
 }
 
 pkg_source_git() {
@@ -454,8 +463,10 @@ pkg_source_git() {
     git remote set-url origin "${2%[#@]*}" 2>/dev/null ||
         git remote add origin "${2%[#@]*}"
 
-    git fetch --depth=1 origin "$com"
-    git reset --hard FETCH_HEAD
+    git fetch -t origin "$com" ||
+        git fetch -t
+
+    git -c advice.detachedHead=0 checkout "${com:-FETCH_HEAD}"
 }
 
 pkg_source_tar() {
@@ -876,7 +887,7 @@ pkg_build_all() {
 
     # If this is an update, don't always build explicitly passsed packages
     # and instead install pre-built binaries if they exist.
-    ok "$prefer_cache" || explicit_build=$explicit
+    ok "$pkg_update" || explicit_build=$explicit
 
     set --
 
@@ -946,7 +957,7 @@ pkg_build_all() {
         pkg_etcsums
         pkg_tar      "$pkg"
 
-        if equ "${prefer_cache:=0}" 1 || ! contains "$explicit" "$pkg"; then
+        if ok "$pkg_update" || ! contains "$explicit" "$pkg"; then
             log "$pkg" "Needed as a dependency or has an update, installing"
 
             # Intended behavior.
@@ -955,10 +966,11 @@ pkg_build_all() {
         fi
     done
 
-    # Intentional, globbing disabled.
-    # shellcheck disable=2046,2086
-    ! equ "${build_install:=1}" 1 || ! equ "${KISS_PROMPT:=1}" 1 ||
+    case $pkg_update in '')
+        # Intentional, globbing disabled.
+        # shellcheck disable=2046,2086
         ! prompt "Install built packages? [$explicit]" || (args i $explicit)
+    esac
 }
 
 pkg_build() {
@@ -984,18 +996,17 @@ pkg_build() {
         # Give the script a modified environment. Define toolchain program
         # environment variables assuming a generic environment by default.
         #
-        # Define DESTDIR and GOPATH to sane defaults as their use is mandatory
-        # in anything using autotools, meson, cmake, etc. Define KISS_ROOT as
-        # the sanitized value used internally by the package manager. This is
-        # safe to join with other paths.
+        # Define DESTDIR, PREFIX and GOPATH to sane defaults as their use is
+        # mandatory in anything using autotools, meson, cmake, etc.
+        #
+        # Define KISS_ROOT as the sanitized value used internally by the
+        # package manager. This is safe to join with other paths.
         AR="${AR:-ar}" \
         CC="${CC:-cc}" \
         CXX="${CXX:-c++}" \
         NM="${NM:-nm}" \
         RANLIB="${RANLIB:-ranlib}" \
         DESTDIR="$pkg_dir/$1" \
-        RUSTFLAGS="--remap-path-prefix=$PWD=. $RUSTFLAGS" \
-        GOFLAGS="-trimpath -modcacherw $GOFLAGS" \
         GOPATH="$PWD/go" \
         KISS_ROOT="$KISS_ROOT" \
         \
@@ -1073,14 +1084,23 @@ pkg_verify() {
     # shellcheck disable=2038,2086
     set -- $hash
 
+    # Only read checksums if we generated some.
+    null "$1" ||
+
     # Check that the first column (separated by whitespace) match in both
     # checksum files. If any part of either file differs, mismatch. Abort.
-    null "$1" || while read -r chk _ || ok "$1"; do
+    while read -r chk _ || ok "$1"; do
         printf '%s\n%s\n' "- ${chk:-missing}" "+ ${1:-no source}"
 
-        equ "$1-${chk:-null}" "$chk-$1" ||
-        equ "$1-${chk:-null}" "$1-SKIP" ||
-            die "$repo_name" "Checksum mismatch"
+        case $1-${chk:-null} in
+            "$chk-$1"|"$1-SKIP")
+                # We have a match.
+            ;;
+
+            "$hash"-*|*)
+                die "$repo_name" "Checksum mismatch"
+            ;;
+        esac
 
         shift "$(($# != 0))"
     done < "$repo_dir/checksums"
@@ -1587,7 +1607,7 @@ pkg_update() {
 
     # Update each repository in '$KISS_PATH'.
     for repo do
-        if git -C "$repo" rev-parse 'HEAD@{upstream}' >/dev/null 2>&1; then
+        if git -C "$repo" remote >/dev/null 2>&1; then
             repo_type=git
 
             # Get the Git repository root directory.
@@ -1673,8 +1693,7 @@ pkg_upgrade() {
         war "Packages without repository$_repo_orp"
     esac
 
-    build_install=0
-    prefer_cache=1
+    pkg_update=1
 
     ! contains "$*" kiss || {
         log "Detected package manager update"
@@ -1695,7 +1714,8 @@ pkg_upgrade() {
         # shellcheck disable=2046,2086
         set -- $order
 
-        prompt "Packages to update ($#): $*"
+        log "Packages to update ($#): $*"
+        prompt
         pkg_build_all "$@"
         log "Updated all packages"
         return 0

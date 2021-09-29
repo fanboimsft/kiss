@@ -1,0 +1,142 @@
+#!/bin/sh -e
+# Interactively and recursively remove packages with dependencies
+# https://gist.github.com/FriendlyNeighborhoodShane/
+
+# Check if terminal is interactive
+[ -t 1 ] || {
+  echo "error: launched in non-interactive environment";
+  exit 1;
+}
+
+# Check if all given packages are installed
+[ "$*" ] && kiss list "$@" >/dev/null || {
+  echo "usage: [kiss-rmdeps [pkg]...]";
+  exit 1;
+}
+
+# Conditionally use sexy kiss-accurate colors for prompts
+if [ "$KISS_COLOR" != "0" ]; then
+  col0="$(printf "\033[m")";
+  col1="$(printf "\033[1;33m")";
+  col2="$(printf "\033[1;34m")";
+else
+  col0="";
+  col1="";
+  col2="";
+fi;
+prompt="${col1}->${col0}";
+
+# Check if $1 is an item in space-separated list $2
+is_item() {
+  case "$2" in
+    "$1"|"$1 "*|*" $1 "*|*" $1")
+      return 0;
+    ;;
+  esac;
+  return 1;
+}
+
+cd "$KISS_ROOT/var/db/kiss/installed";
+
+# List of packages explicitly marked for keeping
+keep="";
+
+count=0;
+
+# Keep looping until we stop marking new items to be removed (in $@)
+while [ "$#" != "$count" ]; do
+
+  count="$#";
+
+  # Find all of the dependencies of explicitly marked packages
+  # They are all candidates for removal
+  deps="$(
+    for pkg in "$@"; do
+      cat "./$pkg/depends" 2>/dev/null;
+    done | awk '{ print $1 }' | sort -u | grep -v "#" || true;
+  )";
+
+  for pkg in $deps; do
+
+    # Check if candidate has been marked for removal already
+    is_item "$pkg" "$*" && continue;
+
+    # Check if candidate has been marked for keeping already
+    is_item "$pkg" "$keep" && continue;
+
+    # Find all dependants of the candidate
+    dependant="";
+    for revdep in $(grep "^$pkg" -- ./*/depends | awk '{ print $1 }'); do
+      # Strip grep candy
+      revdep="${revdep##./}";
+      revdep="${revdep%%/depends*}";
+      # Check if dependant is also marked for removal
+      is_item "$revdep" "$*" || {
+        dependant="yes";
+        break;
+      }
+    done;
+    # If depended on by packages not being removed, can't mark for removal
+    # But don't explicitly mark for keeping either
+    # The dependants that retain it may themselves be marked for removal later
+    [ "$dependant" = "yes" ] && continue;
+
+    # Sanity check
+    kiss list "$pkg" >/dev/null || {
+      echo "error: broken dependency tree";
+      exit 1;
+    }
+
+    # The candidate will be orphaned when everything marked until now is removed
+    # So it is possible to remove it
+    # But it may be a package the user actually needs (a user-facing package)
+    # Ask the only one who really knows: the user
+    echo;
+    printf "${prompt} ${col2}${pkg}${col0} mark for removal?: [y/n] ";
+    read -r REPLY;
+    case $REPLY in
+      Y*|y*)
+        # Decisive yes, mark candidate for removal
+        set -- "$@" "$pkg";
+        continue;
+      ;;
+      N*|n*)
+        # Decisive no, mark candidate for keeping
+        keep="$keep $pkg";
+        continue;
+      ;;
+    esac;
+
+    # Ambiguous answer from user, possible auto decision mechanisms go here
+    # They can make a decisive decision
+    # We should generally avoid making a removal decision automatically
+    # The condition could be, for example, to keep everything except libs
+    # (case "$pkg" in lib*) false ;; *) true ;; esac;)
+#    if BOT_SAYS_DEFINITELY_NO; then
+#      echo;
+#      echo "${prompt} ${col2}${pkg}${col0} marking for keeping (auto)";
+#      keep="$keep $pkg";
+#      continue;
+#    elif BOT_SAYS_DEFINITELY_YES; then
+#      echo;
+#      echo "${prompt} ${col2}${pkg}${col0} marking for removal (auto)";
+#      set -- "$@" "$pkg";
+#      continue;
+#    fi;
+
+    # Consider reaching this point undecided as a decisive no, mark for keeping
+    keep="$keep $pkg";
+
+  done;
+
+done;
+
+# Show the user the result and give a chance to abort
+echo;
+echo "${prompt} Removing: ${col2}$*${col0}";
+echo;
+echo "${prompt} Continue?: Press Enter to continue or Ctrl+C to abort here";
+read -r REPLY;
+
+# Run kiss remove
+echo kiss remove "$@";
