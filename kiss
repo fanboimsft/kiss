@@ -439,10 +439,10 @@ pkg_source_url() {
 
     #add suport for binary sources on mega.nz
     if echo "$3" | grep -q "mega.nz"
-    megalink=$(cat "$repo_dir/megalink")
-    then megadl "$megalink" || {
-        rm -f "$2"
-        die "$repo_name" "Failed to download $3"
+    then megalink=$(cat "$repo_dir/megalink") &&
+         megadl "$megalink" || {
+         rm -f "$2"
+         die "$repo_name" "Failed to download $3"
     }
     else
     "$cmd_get" "$@" || {
